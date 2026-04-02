@@ -1,0 +1,15 @@
+name: DealPulse Reddit — 3 fois par jour
+on:
+  schedule:
+    - cron: '0 9,14,19 * * *'
+  workflow_dispatch:
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Appel Edge Function deal-pulse-reddit
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            "https://wnphyxusalptwqiimazk.supabase.co/functions/v1/deal-pulse-reddit")
+          echo "HTTP status: $response"
