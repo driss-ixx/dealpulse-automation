@@ -1,0 +1,123 @@
+name: Facebook Groups Poster
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+
+jobs:
+  post-to-groups:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Write post_to_groups.py
+        run: |
+          cat > /tmp/post_to_groups.py << 'PYEOF'
+          import asyncio, json, os, random
+          import urllib.request
+
+          SUPABASE_URL = os.environ["SUPABASE_URL"]
+          SUPABASE_KEY = os.environ["SUPABASE_ANON_KEY"]
+          FB_SESSION = json.loads(os.environ["FB_SESSION"])
+
+          GROUPS = [
+              {"url": "https://www.facebook.com/groups/926731111188107", "name": "Bons plans Guadeloupe"},
+              {"url": "https://www.facebook.com/groups/gwadaconnexion", "name": "Gwada Connexion"},
+              {"url": "https://www.facebook.com/groups/8399117423499528", "name": "GWADA CONNEXION NO RESTRICTION"},
+              {"url": "https://www.facebook.com/groups/5070820839648461", "name": "Quoi de neuf Guadeloupe"}
+          ]
+
+          def format_post(title, url, score):
+              emojis = ["🔥","✅","💰","🎯","⚡"]
+              e = emojis[score % len(emojis)]
+              return random.choice([
+                  f"{e} {title}\n\n🤖 Score IA : {score}/10 — Deal validé\n🔗 {url}\n\n💡 Lien affilié Amazon — commission sans surcoût\n\n#BonPlan #DealPulseFR",
+                  f"💡 BON PLAN : {title}\n\nNoté {score}/10 par IA\n👉 {url}\n\n💡 Lien affilié Amazon\n\n#BonPlan #DealPulseFR",
+              ])
+
+          async def post_to_group(page, url, name, text):
+              try:
+                  await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                  await asyncio.sleep(random.uniform(2, 4))
+                  box = page.locator('[role="button"]:has-text("Exprimez-vous"), [aria-label*="Exprimez-vous"]').first
+                  await box.wait_for(timeout=10000)
+                  await box.click()
+                  await asyncio.sleep(random.uniform(1, 2))
+                  for c in text:
+                      await page.keyboard.type(c, delay=random.randint(30, 80))
+                  await asyncio.sleep(random.uniform(1.5, 3))
+                  await page.locator('[aria-label="Publier"],[aria-label="Post"]').first.click()
+                  await asyncio.sleep(random.uniform(3, 5))
+                  print(f"  OK: {name}")
+                  return True
+              except Exception as ex:
+                  print(f"  ERREUR {name}: {ex}")
+                  return False
+
+          async def main():
+              from playwright.async_api import async_playwright
+              req = urllib.request.Request(
+                  f"{SUPABASE_URL}/rest/v1/posted_deals?select=id,title,url,score&fbgroup_posted=is.null&score=gte.8&order=score.desc&limit=2",
+                  headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+              )
+              deals = json.loads(urllib.request.urlopen(req).read())
+              if not deals:
+                  print("Aucun deal eligible."); return
+
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(
+                      headless=False,
+                      args=["--no-sandbox","--disable-dev-shm-usage","--disable-blink-features=AutomationControlled"]
+                  )
+                  ctx = await browser.new_context(storage_state=FB_SESSION, user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+                  await ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+                  page = await ctx.new_page()
+
+                  for deal in deals:
+                      text = format_post(deal["title"], deal["url"], deal["score"])
+                      posted = 0
+                      for i, g in enumerate(GROUPS):
+                          if await post_to_group(page, g["url"], g["name"], text):
+                              posted += 1
+                          if i < len(GROUPS)-1:
+                              await asyncio.sleep(random.randint(30, 60))
+
+                      if posted > 0:
+                          p_req = urllib.request.Request(
+                              f"{SUPABASE_URL}/rest/v1/posted_deals?id=eq.{deal['id']}",
+                              data=json.dumps({"fbgroup_posted": "now()"}).encode(),
+                              headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=minimal"},
+                              method="PATCH"
+                          )
+                          urllib.request.urlopen(p_req)
+
+                  await browser.close()
+
+          asyncio.run(main())
+          PYEOF
+
+      - name: Run poster with Xvfb
+        env:
+          FB_SESSION: ${{ secrets.FB_SESSION }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          DISPLAY: ':99'
+        run: |
+          xvfb-run --server-args="-screen 0 1280x720x24" python /tmp/post_to_groups.py
