@@ -1,0 +1,69 @@
+name: Oracle ARM A1 — Retry Création VM
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  create-vm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Vérifier si VM existe déjà
+        id: check
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: eu-paris-1
+          COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
+        run: |
+          EXISTING=$(oci compute instance list \
+            --compartment-id "$COMPARTMENT_ID" \
+            --display-name "dealpulse-arm" \
+            --lifecycle-state RUNNING \
+            --query 'data[0].id' --raw-output 2>/dev/null || echo "")
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "VM déjà active : $EXISTING"
+            echo "vm_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Pas de VM active — tentative de création"
+            echo "vm_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Créer VM ARM A1
+        if: steps.check.outputs.vm_exists == 'false'
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: eu-paris-1
+          COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
+          SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+          IMAGE_ID: ocid1.image.oc1.eu-paris-1.aaaaaaaaz22rhxpgxozvcl7ee7h6tbv2fhkmlzjtxpuvqmx4ezjbntjl6f4q
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          METADATA="{\"ssh_authorized_keys\":\"$SSH_PUBLIC_KEY\"}"
+          RESULT=$(oci compute instance launch \
+            --compartment-id "$COMPARTMENT_ID" \
+            --availability-domain "fAUm:EU-PARIS-1-AD-1" \
+            --shape "VM.Standard.A1.Flex" \
+            --shape-config '{"ocpus":1,"memoryInGBs":6}' \
+            --image-id "$IMAGE_ID" \
+            --subnet-id "$SUBNET_ID" \
+            --assign-public-ip true \
+            --display-name "dealpulse-arm" \
+            --metadata "$METADATA" \
+            2>&1) || true
+
+          if echo "$RESULT" | grep -q '"id": "ocid1.instance'; then
+            echo "✅ VM CRÉÉE AVEC SUCCÈS !"
+            echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print('Instance:', d['data']['id'])"
+          else
+            echo "❌ Capacité insuffisante — prochain essai dans 30 min"
+          fi
