@@ -63,7 +63,24 @@ jobs:
 
           if echo "$RESULT" | grep -q '"id": "ocid1.instance'; then
             echo "✅ VM CRÉÉE AVEC SUCCÈS !"
-            echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print('Instance:', d['data']['id'])"
+            INSTANCE_ID=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['id'])" 2>/dev/null)
+            echo "Instance: $INSTANCE_ID"
+            echo "vm_created=true" >> $GITHUB_OUTPUT
+            echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
           else
             echo "❌ Capacité insuffisante — prochain essai dans 30 min"
+            echo "vm_created=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Notifier par email (GitHub Issue)
+        if: steps.check.outputs.vm_exists == 'false' && steps.create.outputs.vm_created == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '✅ Oracle ARM VM créée avec succès !',
+              body: `## VM Oracle Cloud ARM A1 créée\n\n**Instance ID:** \`${{ steps.create.outputs.instance_id }}\`\n\n**Prochaines étapes :**\n1. Attendre 2 min que la VM démarre\n2. Récupérer l'IP publique :\n\`\`\`bash\noci compute instance list-vnics --instance-id ${{ steps.create.outputs.instance_id }} --query 'data[0]."public-ip"' --raw-output\n\`\`\`\n3. SSH : \`ssh ubuntu@<IP_PUBLIQUE> -i ~/Document\\ -\\ Papiers/ssh-key-2026-04-02.key\`\n\n> GitHub enverra un email de notification automatiquement.`,
+              labels: ['vm-created']
+            });
