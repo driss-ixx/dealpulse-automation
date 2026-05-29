@@ -13,3 +13,7 @@ jobs:
             -X POST \
             "https://wnphyxusalptwqiimazk.supabase.co/functions/v1/deal-pulse-reddit")
           echo "HTTP status: $response"
+          if [ "$response" != "200" ]; then
+            echo "ERREUR: Edge function a retourné $response"
+            exit 1
+          fi
