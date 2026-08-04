@@ -22,10 +22,32 @@ curl -s https://wnphyxusalptwqiimazk.supabase.co/functions/v1/deal-pulse-selftes
 Rend le nombre de produits extraits, un échantillon, et compare l'ancien et le nouveau motif.
 **Le réflexe à avoir** dès qu'on soupçonne une panne, ou après tout changement chez Amazon.
 
+### Facebook / Instagram : jetons révoqués — action manuelle requise
+
+Diagnostic par `deal-pulse-diag-meta` (ne révèle jamais la valeur d'un jeton) :
+
+```bash
+curl -s https://wnphyxusalptwqiimazk.supabase.co/functions/v1/deal-pulse-diag-meta | jq
+```
+
+| Réseau | Erreur | Signification |
+|---|---|---|
+| Facebook | `190` / sous-code **460** | session invalidée — mot de passe changé, ou révocation de sécurité Meta |
+| Instagram | `190` / sous-code **467** | session invalide — déconnexion de l'utilisateur |
+
+Les **permissions sont bonnes** (`pages_manage_posts`, `pages_show_list`…) et le jeton n'a pas
+de date d'expiration : ce n'est donc pas un problème de configuration, mais une révocation.
+**Rien à corriger dans le code.** Il faut régénérer les jetons depuis
+[developers.facebook.com](https://developers.facebook.com/tools/explorer/) et remplacer
+`FACEBOOK_PAGE_ACCESS_TOKEN` et `INSTAGRAM_ACCESS_TOKEN` dans la table `bot_config`.
+
 ### Ce qui reste cassé, indépendamment
 
 - `deal-pulse-reddit` — `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_PASSWORD` **vides** dans `bot_config`
 - `deal-pulse-fbgroups` — `FACEBOOK_USER_TOKEN` et `FACEBOOK_GROUP_IDS` **vides**
+- **4 workflows sur 5 sont `disabled_inactivity`** — dont `deal-pulse-weekly` (récap du lundi).
+  Seul `DealPulse Cron` tourne. Réactivation : `gh workflow enable <id> --repo driss-ixx/dealpulse-automation`
+- Le site **dealpulse-fr.vercel.app n'existe plus** (404 sur le domaine entier)
 - `bot_config` stocke les secrets **en clair** en base — à migrer vers les secrets Supabase
 
 ---

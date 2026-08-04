@@ -137,14 +137,35 @@ async function scrapeAmazonDeals(affiliateTag: string): Promise<Deal[]> {
   const deals: Deal[] = [];
   const vus = new Set<string>();
 
-  const ajouter = (asin: string, titre: string) => {
+  // ⚠️ L'ancienne construction d'image etait FAUSSE :
+  //   https://images-na.ssl-images-amazon.com/images/I/<ASIN>._AC_SL500_.jpg
+  // Le segment /images/I/ attend un identifiant d'IMAGE, pas un ASIN. Verifie le
+  // 2026-08-04 : ces URLs rendent HTTP 400. Or Instagram REFUSE de publier si l'image
+  // est inaccessible — c'est une des raisons pour lesquelles IG ne postait rien.
+  // La vraie adresse est dans le JSON de la page : image.hiRes.baseUrl + "." + extension
+  // (verifie : HTTP 200).
+  const ajouter = (asin: string, titre: string, image?: string) => {
     if (!asin || !titre || vus.has(asin) || deals.length >= 10) return;
     vus.add(asin);
     deals.push({
       title: titre.trim(),
       link: `https://www.amazon.fr/dp/${asin}?tag=${affiliateTag}`,
-      image_url: `https://images-na.ssl-images-amazon.com/images/I/${asin}._AC_SL500_.jpg`
+      image_url: image || undefined
     });
+  };
+
+  /** Reconstruit l'adresse de la vignette produit depuis le bloc `image` du JSON Amazon. */
+  const imageDuProduit = (p: Record<string, unknown>): string | undefined => {
+    const img = p.image as Record<string, unknown> | undefined;
+    if (!img) return undefined;
+    for (const taille of ["hiRes", "lowRes", "thumbnail"]) {
+      const t = img[taille] as Record<string, unknown> | undefined;
+      if (t && typeof t.baseUrl === "string") {
+        const ext = typeof t.extension === "string" ? t.extension : "jpg";
+        return `${t.baseUrl}.${ext}`;
+      }
+    }
+    return undefined;
   };
 
   try {
@@ -158,7 +179,7 @@ async function scrapeAmazonDeals(affiliateTag: string): Promise<Deal[]> {
     for (const p of extraireProduits(html)) {
       const asin = typeof p.asin === "string" ? p.asin : "";
       const titre = typeof p.title === "string" ? p.title : "";
-      if (/^[A-Z0-9]{10}$/.test(asin) && titre.length >= 10) ajouter(asin, titre);
+      if (/^[A-Z0-9]{10}$/.test(asin) && titre.length >= 10) ajouter(asin, titre, imageDuProduit(p));
     }
 
     // Filet de secours : regex tolerante aux DEUX ordres de cles, si le JSON change de forme.
@@ -231,10 +252,18 @@ async function postToFacebook(config: Config, title: string, link: string, score
   } catch (e) { console.error("Facebook exception:", e); return false; }
 }
 
-async function postToInstagram(config: Config, title: string, link: string, score: ScoreData): Promise<boolean> {
+async function postToInstagram(config: Config, title: string, link: string, score: ScoreData, imageProduit?: string): Promise<boolean> {
   if (!config.INSTAGRAM_ACCESS_TOKEN || !config.INSTAGRAM_USER_ID) return false;
   try {
-    const imageUrl = "https://dealpulse-fr.vercel.app/og.png";
+    // ⚠️ L'image etait figee sur https://dealpulse-fr.vercel.app/og.png — or ce site
+    // N'EXISTE PLUS (verifie le 2026-08-04 : HTTP 404 sur le domaine entier). Instagram
+    // exige une image accessible, sinon il refuse la publication. On utilise desormais
+    // la vraie vignette du produit, extraite du JSON Amazon.
+    const imageUrl = imageProduit;
+    if (!imageUrl) {
+      console.error("Instagram: aucune image produit disponible, publication impossible");
+      return false;
+    }
     const caption = `${score.emoji} ${title}\n\n🤖 Score IA : ${score.score}/10\n💬 ${score.verdict}\n\n🔗 Lien en bio | ${link}\n💡 Lien affilié Amazon\n\n📢 Rejoins @dealpulsefr pour recevoir les deals scorés par IA en temps réel !\n\n#bonplan #dealfrance #amazonfr #promocode #dealpulsefr #bonnesaffaires #shoppingfrance #dealoftheday`;
     const containerResp = await fetch(`https://graph.facebook.com/v20.0/${config.INSTAGRAM_USER_ID}/media`, {
       method: "POST",
@@ -298,7 +327,7 @@ serve(async (_req) => {
       postToTelegram(config, deal.title, deal.link, score),
       postToBluesky(config, deal.title, deal.link, score),
       postToFacebook(config, deal.title, deal.link, score),
-      postToInstagram(config, deal.title, deal.link, score)
+      postToInstagram(config, deal.title, deal.link, score, deal.image_url)
     ]);
 
     if (tg || bsky || fb || ig) {
@@ -336,7 +365,7 @@ serve(async (_req) => {
 
   return new Response(JSON.stringify({
     success,
-    version: 9,
+    version: 10,
     token_refreshed: !!freshToken,
     deals_found: deals.length,
     deals_posted_telegram: postedTelegram,
