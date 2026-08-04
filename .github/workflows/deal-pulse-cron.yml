@@ -42,3 +42,18 @@ jobs:
 
           publies=$(printf '%s' "$json" | jq -r '.deals_posted_telegram // 0')
           echo "OK : $trouves produit(s) trouvé(s), $publies publié(s) sur Telegram"
+
+      # Instagram n'est pas rattaché à la Page, et Meta refuse ce rattachement depuis le
+      # 2026-08-04 (« votre compte est restreint, temporairement »). Rien à forcer : insister
+      # prolonge ce genre de restriction. Cette étape regarde simplement, à chaque passage,
+      # si c'est redevenu possible — et le jour venu elle installe les clés toute seule et
+      # prévient sur Telegram. Driss n'a donc rien à surveiller.
+      # Elle ne fait jamais échouer le job : Instagram est un bonus, pas une condition.
+      - name: Instagram est-il enfin rattachable ?
+        continue-on-error: true
+        run: |
+          veille=$(curl -s -m 60 "https://wnphyxusalptwqiimazk.supabase.co/functions/v1/deal-pulse-veille-instagram")
+          echo "$veille"
+          if [ "$(printf '%s' "$veille" | jq -r '.rattache')" = "true" ]; then
+            echo "::notice::Instagram vient d'être branché automatiquement"
+          fi
