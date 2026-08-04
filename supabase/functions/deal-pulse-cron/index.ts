@@ -302,19 +302,18 @@ serve(async (_req) => {
   let postedTelegram = 0, postedBluesky = 0, postedFacebook = 0, postedInstagram = 0;
   const errors: string[] = [];
 
-  for (const deal of deals.slice(0, 3)) {
-    const dealHash = hashLink(deal.link);
+  // ⚠️ BUG STRUCTUREL corrige le 2026-08-04. L'ancienne boucle faisait
+  // `deals.slice(0, 3)` PUIS ecartait ceux deja publies : si les 3 premiers produits
+  // d'Amazon etaient connus — ce qui est le cas la plupart du temps, la page bougeant
+  // lentement — le bot ne publiait RIEN, tout en se declarant en bonne sante.
+  // On ecarte d'abord les deja-vus, ON PREND ENSUITE les 3 premiers restants.
+  const { data: dejaPublies } = await supabase.from("posted_deals").select("deal_hash");
+  const connus = new Set((dejaPublies || []).map((r: { deal_hash: string }) => r.deal_hash));
+  const nouveaux = deals.filter((d) => !connus.has(hashLink(d.link)));
+  console.log(`${deals.length} produit(s) extrait(s), ${nouveaux.length} pas encore publie(s)`);
 
-    // Dedup: check posted_deals (correct table name)
-    const { data: existing } = await supabase
-      .from("posted_deals")
-      .select("id")
-      .eq("deal_hash", dealHash)
-      .maybeSingle();
-    if (existing) {
-      console.log("Already posted:", dealHash);
-      continue;
-    }
+  for (const deal of nouveaux.slice(0, 3)) {
+    const dealHash = hashLink(deal.link);
 
     const score = await scoreWithGroq(config, deal);
     console.log(`Deal: ${deal.title} | Score: ${score.score} | Hash: ${dealHash}`);
@@ -365,9 +364,10 @@ serve(async (_req) => {
 
   return new Response(JSON.stringify({
     success,
-    version: 10,
+    version: 11,
     token_refreshed: !!freshToken,
     deals_found: deals.length,
+    deals_nouveaux: nouveaux.length,
     deals_posted_telegram: postedTelegram,
     deals_posted_bluesky: postedBluesky,
     deals_posted_facebook: postedFacebook,
