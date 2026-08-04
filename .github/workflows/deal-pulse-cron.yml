@@ -7,13 +7,38 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
+      # ⚠️ 2026-08-04 — Pourquoi ce job a menti pendant 67 jours.
+      # L'ancienne version ne regardait QUE le code HTTP. Or la fonction renvoyait
+      # 200 + {"success":true} en toute circonstance, y compris en ne publiant rien.
+      # Un contrôle qui ne peut pas virer au rouge n'est pas un contrôle.
+      # Désormais on lit le CORPS de la réponse et on échoue sur success:false
+      # ou sur 0 produit extrait.
       - name: Appel Edge Function deal-pulse-cron
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST \
+          reponse=$(curl -s -m 120 -w $'\n%{http_code}' -X POST \
             "https://wnphyxusalptwqiimazk.supabase.co/functions/v1/deal-pulse-cron")
-          echo "HTTP status: $response"
-          if [ "$response" != "200" ]; then
-            echo "ERREUR: Edge function a retourné $response"
+          code=$(printf '%s' "$reponse" | tail -n1)
+          json=$(printf '%s' "$reponse" | sed '$d')
+
+          echo "HTTP $code"
+          echo "Réponse : $json"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::La fonction a répondu $code"
             exit 1
           fi
+
+          # jq est préinstallé sur ubuntu-latest
+          if [ "$(printf '%s' "$json" | jq -r '.success')" != "true" ]; then
+            echo "::error::success=false — $(printf '%s' "$json" | jq -r '.errors | join(" | ")')"
+            exit 1
+          fi
+
+          trouves=$(printf '%s' "$json" | jq -r '.deals_found // 0')
+          if [ "$trouves" -eq 0 ]; then
+            echo "::error::0 produit extrait d'Amazon — le format de la page a probablement changé"
+            exit 1
+          fi
+
+          publies=$(printf '%s' "$json" | jq -r '.deals_posted_telegram // 0')
+          echo "OK : $trouves produit(s) trouvé(s), $publies publié(s) sur Telegram"
