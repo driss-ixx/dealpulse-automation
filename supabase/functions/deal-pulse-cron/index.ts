@@ -18,6 +18,13 @@ interface Config {
   // conservee telle quelle pour pouvoir revenir en arriere.
   INSTAGRAM_LOGIN_TOKEN?: string;
   INSTAGRAM_LOGIN_USER_ID?: string;
+  // Interrupteurs par reseau : "on" / "off", modifiables dans bot_config SANS redeployer.
+  // Poses le 2026-08-05 : les 4 reseaux partaient ensemble dans un seul Promise.all, donc
+  // couper Facebook — pendant le recours Meta — obligeait a arreter TOUT le bot.
+  CANAL_TELEGRAM?: string;
+  CANAL_BLUESKY?: string;
+  CANAL_FACEBOOK?: string;
+  CANAL_INSTAGRAM?: string;
 }
 
 interface Deal {
@@ -378,7 +385,7 @@ async function postToInstagramViaPage(config: Config, title: string, link: strin
   } catch (e) { console.error("Instagram exception:", e); return false; }
 }
 
-serve(async (_req) => {
+serve(async (req) => {
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
@@ -388,6 +395,35 @@ serve(async (_req) => {
   if (configError) console.error("Config load error:", configError);
   const config: Config = {} as Config;
   for (const row of (configRows || [])) (config as any)[row.key] = row.value;
+
+  /**
+   * Quels reseaux publier ?
+   *
+   * Deux niveaux, du plus ponctuel au plus durable :
+   *   1. `?canaux=instagram` (ou `instagram,telegram`) dans l'URL — force un sous-ensemble
+   *      pour CET appel. Sert aux crons dedies et aux tests, sans rien changer en base.
+   *   2. sinon, les cles CANAL_* de bot_config : "off" coupe le reseau. Modifiable a la
+   *      volee, SANS redeploiement.
+   *
+   * POURQUOI (2026-08-05). Les 4 reseaux partaient ensemble dans un seul Promise.all :
+   * quand Meta a desactive le portefeuille et qu'il a fallu suspendre Facebook le temps du
+   * recours, il n'y avait pas d'autre choix que d'arreter le bot entier — Telegram, Bluesky
+   * et Instagram compris, alors qu'ils n'avaient aucun probleme.
+   */
+  const forces = new URL(req.url).searchParams.get("canaux");
+  const demandes = forces
+    ? forces.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+    : null;
+  const actif = (nom: string): boolean =>
+    demandes
+      ? demandes.includes(nom)
+      : ((config as unknown as Record<string, unknown>)[`CANAL_${nom.toUpperCase()}`] ?? "on") !== "off";
+
+  const etatCanaux = {
+    telegram: actif("telegram"), bluesky: actif("bluesky"),
+    facebook: actif("facebook"), instagram: actif("instagram")
+  };
+  console.log("Canaux actifs :", JSON.stringify(etatCanaux));
 
   const freshToken = await autoRefreshFacebookToken(config, supabase);
   if (freshToken) config.FACEBOOK_PAGE_ACCESS_TOKEN = freshToken;
@@ -417,11 +453,12 @@ serve(async (_req) => {
       continue;
     }
 
+    // Un reseau coupe n'est pas appele du tout : il rend false sans requete reseau.
     const [tg, bsky, fb, ig] = await Promise.all([
-      postToTelegram(config, deal.title, deal.link, score),
-      postToBluesky(config, deal.title, deal.link, score),
-      postToFacebook(config, deal.title, deal.link, score),
-      postToInstagram(config, deal.title, deal.link, score, deal.image_url)
+      etatCanaux.telegram  ? postToTelegram(config, deal.title, deal.link, score) : Promise.resolve(false),
+      etatCanaux.bluesky   ? postToBluesky(config, deal.title, deal.link, score) : Promise.resolve(false),
+      etatCanaux.facebook  ? postToFacebook(config, deal.title, deal.link, score) : Promise.resolve(false),
+      etatCanaux.instagram ? postToInstagram(config, deal.title, deal.link, score, deal.image_url) : Promise.resolve(false)
     ]);
 
     if (tg || bsky || fb || ig) {
@@ -457,16 +494,22 @@ serve(async (_req) => {
   }
   const success = errors.length === 0;
 
+  // On distingue « coupe » de « 0 publie » : sans ca, un reseau eteint et un reseau en panne
+  // se ressemblent — c'est exactement le genre d'ambiguite qui a masque la panne Facebook.
+  const bilan = (ouvert: boolean, n: number) => (ouvert ? n : "coupe");
+
   return new Response(JSON.stringify({
     success,
-    version: 13,
+    version: 14,
+    canaux: etatCanaux,
+    canaux_forces_par_url: demandes ?? null,
     token_refreshed: !!freshToken,
     deals_found: deals.length,
     deals_nouveaux: nouveaux.length,
-    deals_posted_telegram: postedTelegram,
-    deals_posted_bluesky: postedBluesky,
-    deals_posted_facebook: postedFacebook,
-    deals_posted_instagram: postedInstagram,
+    deals_posted_telegram: bilan(etatCanaux.telegram, postedTelegram),
+    deals_posted_bluesky: bilan(etatCanaux.bluesky, postedBluesky),
+    deals_posted_facebook: bilan(etatCanaux.facebook, postedFacebook),
+    deals_posted_instagram: bilan(etatCanaux.instagram, postedInstagram),
     errors
   }), {
     // Un code HTTP 500 quand ca ne va pas : le workflow GitHub echoue enfin pour de vrai,
