@@ -287,23 +287,32 @@ async function postToInstagram(config: Config, title: string, link: string, scor
     }
     const caption = `${score.emoji} ${title}\n\n🤖 Score IA : ${score.score}/10\n💬 ${score.verdict}\n\n🔗 Lien en bio | ${link}\n💡 Lien affilié Amazon\n\n📢 Rejoins @dealpulsefr pour recevoir les deals scorés par IA en temps réel !\n\n#bonplan #dealfrance #amazonfr #promocode #dealpulsefr #bonnesaffaires #shoppingfrance #dealoftheday`;
 
+    // ⚠️ LE JETON VA DANS L'EN-TETE, PAS DANS LE CORPS.
+    // Mis dans le corps (comme le fait l'API via-Page), graph.instagram.com repond
+    // « Only photo or video can be accepted as media type » — un message trompeur qui
+    // n'a rien a voir avec l'image. Verifie le 2026-08-04 : l'image etait un vrai JPEG
+    // en HTTP 200, et seule la forme « en-tete Bearer + JSON » a ete acceptee, du
+    // premier coup, sur les 4 formes testees.
+    const enTetes = { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
+
     // Etape 1 : creer le conteneur media.
     const containerResp = await fetch(`https://graph.instagram.com/v21.0/${userId}/media`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_url: imageUrl, caption, access_token: token })
+      headers: enTetes,
+      body: JSON.stringify({ image_url: imageUrl, caption })
     });
     const container = await containerResp.json();
     if (!container.id) { console.error("Instagram container error:", JSON.stringify(container)); return false; }
 
-    // Instagram a besoin d'un instant pour telecharger l'image avant de pouvoir publier.
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Instagram doit telecharger l'image avant de pouvoir publier. 4 s : c'est le delai
+    // qui a fonctionne au test reel ; 2 s echouait par intermittence sur l'ancienne voie.
+    await new Promise(resolve => setTimeout(resolve, 4000));
 
     // Etape 2 : publier le conteneur.
     const publishResp = await fetch(`https://graph.instagram.com/v21.0/${userId}/media_publish`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ creation_id: container.id, access_token: token })
+      headers: enTetes,
+      body: JSON.stringify({ creation_id: container.id })
     });
     const publishResult = await publishResp.json();
     if (!publishResult.id) { console.error("Instagram publish error:", JSON.stringify(publishResult)); return false; }
@@ -450,7 +459,7 @@ serve(async (_req) => {
 
   return new Response(JSON.stringify({
     success,
-    version: 12,
+    version: 13,
     token_refreshed: !!freshToken,
     deals_found: deals.length,
     deals_nouveaux: nouveaux.length,
