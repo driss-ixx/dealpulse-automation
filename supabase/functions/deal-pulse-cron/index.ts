@@ -14,6 +14,10 @@ interface Config {
   META_APP_SECRET?: string;
   INSTAGRAM_ACCESS_TOKEN?: string;
   INSTAGRAM_USER_ID?: string;
+  // Nouvelle API Instagram (voir postToInstagram) : cles dediees, l'ancienne paire est
+  // conservee telle quelle pour pouvoir revenir en arriere.
+  INSTAGRAM_LOGIN_TOKEN?: string;
+  INSTAGRAM_LOGIN_USER_ID?: string;
 }
 
 interface Deal {
@@ -252,7 +256,88 @@ async function postToFacebook(config: Config, title: string, link: string, score
   } catch (e) { console.error("Facebook exception:", e); return false; }
 }
 
+/**
+ * Publie sur Instagram via l'API « Instagram API with Instagram Login ».
+ *
+ * POURQUOI CE CHANGEMENT (2026-08-04). L'API precedente passait par la Page Facebook, donc
+ * par le portefeuille business — que Meta a desactive pour « activite inhabituelle ». Tant que
+ * le recours n'aboutit pas, RIEN ne peut etre rattache a ce portefeuille : Instagram etait
+ * donc totalement bloque.
+ *
+ * Meta propose une seconde API qui ne demande aucune Page liee :
+ *   https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/
+ * Elle vit sur graph.instagram.com (et non graph.facebook.com) et utilise un jeton propre a
+ * Instagram, obtenu en se connectant directement avec le compte @dealpulsefr.
+ *
+ * Verifie le 2026-08-04 : compte BUSINESS reconnu, jeton valable 60 jours.
+ * ⚠️ Ce jeton expire — il est renouvele automatiquement par rafraichirJetonInstagram().
+ */
 async function postToInstagram(config: Config, title: string, link: string, score: ScoreData, imageProduit?: string): Promise<boolean> {
+  const token = config.INSTAGRAM_LOGIN_TOKEN;
+  const userId = config.INSTAGRAM_LOGIN_USER_ID;
+  if (!token || !userId) {
+    console.log("Instagram: pas de jeton Instagram Login configure");
+    return false;
+  }
+  try {
+    const imageUrl = imageProduit;
+    if (!imageUrl) {
+      console.error("Instagram: aucune image produit disponible, publication impossible");
+      return false;
+    }
+    const caption = `${score.emoji} ${title}\n\n🤖 Score IA : ${score.score}/10\n💬 ${score.verdict}\n\n🔗 Lien en bio | ${link}\n💡 Lien affilié Amazon\n\n📢 Rejoins @dealpulsefr pour recevoir les deals scorés par IA en temps réel !\n\n#bonplan #dealfrance #amazonfr #promocode #dealpulsefr #bonnesaffaires #shoppingfrance #dealoftheday`;
+
+    // Etape 1 : creer le conteneur media.
+    const containerResp = await fetch(`https://graph.instagram.com/v21.0/${userId}/media`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_url: imageUrl, caption, access_token: token })
+    });
+    const container = await containerResp.json();
+    if (!container.id) { console.error("Instagram container error:", JSON.stringify(container)); return false; }
+
+    // Instagram a besoin d'un instant pour telecharger l'image avant de pouvoir publier.
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Etape 2 : publier le conteneur.
+    const publishResp = await fetch(`https://graph.instagram.com/v21.0/${userId}/media_publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ creation_id: container.id, access_token: token })
+    });
+    const publishResult = await publishResp.json();
+    if (!publishResult.id) { console.error("Instagram publish error:", JSON.stringify(publishResult)); return false; }
+    console.log("Instagram posted:", publishResult.id);
+    return true;
+  } catch (e) { console.error("Instagram exception:", e); return false; }
+}
+
+/**
+ * Prolonge le jeton Instagram avant qu'il n'expire (il vaut 60 jours).
+ * `ig_refresh_token` ne demande PAS l'app secret — un simple appel suffit. On rafraichit
+ * a chaque passage : Instagram remet le compteur a 60 jours, donc il n'expire jamais tant
+ * que le bot tourne. C'est ce qui evite de revivre la panne silencieuse de Facebook.
+ */
+async function rafraichirJetonInstagram(config: Config, supabase: any): Promise<void> {
+  const token = config.INSTAGRAM_LOGIN_TOKEN;
+  if (!token) return;
+  try {
+    const r = await fetch(
+      `https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(token)}`
+    );
+    const j = await r.json();
+    if (j.access_token && j.access_token !== token) {
+      await supabase.from("bot_config").update({ value: j.access_token }).eq("key", "INSTAGRAM_LOGIN_TOKEN");
+      config.INSTAGRAM_LOGIN_TOKEN = j.access_token;
+      console.log(`Jeton Instagram prolonge (${Math.round((j.expires_in || 0) / 86400)} jours)`);
+    }
+  } catch (e) {
+    console.error("rafraichirJetonInstagram:", e);
+  }
+}
+
+/** Ancienne voie, conservee pour reference — inutilisable tant que le portefeuille est desactive. */
+async function postToInstagramViaPage(config: Config, title: string, link: string, score: ScoreData, imageProduit?: string): Promise<boolean> {
   if (!config.INSTAGRAM_ACCESS_TOKEN || !config.INSTAGRAM_USER_ID) return false;
   try {
     // ⚠️ L'image etait figee sur https://dealpulse-fr.vercel.app/og.png — or ce site
@@ -297,6 +382,7 @@ serve(async (_req) => {
 
   const freshToken = await autoRefreshFacebookToken(config, supabase);
   if (freshToken) config.FACEBOOK_PAGE_ACCESS_TOKEN = freshToken;
+  await rafraichirJetonInstagram(config, supabase);
 
   const deals = await scrapeAmazonDeals(config.AMAZON_AFFILIATE_TAG || "dealpulse02-21");
   let postedTelegram = 0, postedBluesky = 0, postedFacebook = 0, postedInstagram = 0;
@@ -364,7 +450,7 @@ serve(async (_req) => {
 
   return new Response(JSON.stringify({
     success,
-    version: 11,
+    version: 12,
     token_refreshed: !!freshToken,
     deals_found: deals.length,
     deals_nouveaux: nouveaux.length,
