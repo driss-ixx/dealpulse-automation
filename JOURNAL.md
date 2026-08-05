@@ -2,7 +2,7 @@
 
 > Écrit automatiquement par `journal-projet.py`. **Que des faits relevés sur le disque**,
 > jamais une supposition. Sert à retrouver le fil d'un projet sans avoir à tout réexpliquer —
-> notamment depuis Telegram. Dernière mise à jour : **04/08/2026 à 19:11**.
+> notamment depuis Telegram. Dernière mise à jour : **04/08/2026 à 22:12**.
 
 ## Où ça en est
 
@@ -11,14 +11,14 @@
 
 ## Ce qui a été fait récemment
 
+- 04/08 19:40 — DealPulse: veille Instagram automatique
+- 04/08 19:11 — backup auto 2026-08-04 19:11:16
 - 04/08 18:11 — DealPulse: dedup avant selection, jeton Page permanent, Facebook republie
 - 04/08 17:28 — DealPulse: extraction JSON, panne rendue visible, vraies images produit
 - 04/08 16:10 — backup auto 2026-08-04 16:09:59
 - 04/08 13:09 — backup auto 2026-08-04 13:08:50
 - 04/08 10:08 — backup auto 2026-08-04 10:07:49
 - 04/08 07:07 — backup auto 2026-08-04 07:06:46
-- 04/08 04:06 — backup auto 2026-08-04 04:05:43
-- 29/05 10:31 — perf: oracle-arm-retry -> toutes les 6h (VM déjà active)
 
 ## Fichiers principaux
 
